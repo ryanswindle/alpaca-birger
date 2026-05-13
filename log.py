@@ -51,6 +51,10 @@ def setup_logging() -> None:
     logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         logging.getLogger(name).handlers.clear()
+    # python-multipart emits per-field DEBUG callbacks that swamp the log
+    # during every form-encoded PUT — squelch to INFO.
+    for name in ("python_multipart", "python_multipart.multipart", "multipart", "multipart.multipart"):
+        logging.getLogger(name).setLevel(logging.INFO)
 
 
 def get_logger():

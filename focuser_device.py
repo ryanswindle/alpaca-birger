@@ -16,12 +16,14 @@ from log import get_logger
 logger = get_logger()
 
 
-# IsMoving is true while the device is settling toward a commanded target.
-# Empirically the 14-bit mapped range often does not resolve to a unique
-# encoder count, so we use a "no recent position update" signal rather than
-# "position == target": once spontaneous %:xxxx updates stop arriving for
-# this long, we consider the move complete.
-_MOVE_SETTLE_SECONDS = 0.5
+# IsMoving stays True after a Move() until we've observed the lens move
+# AND its reported position has been stable for at least the settle window.
+# - STARTUP_TIMEOUT covers "move issued but no change yet seen" (the poll
+#   interval is ~500 ms, so we need at least two polls of grace before we
+#   conclude the lens isn't going to move at all — e.g. already at target).
+# - SETTLE_SECONDS is the quiet window after the last observed change.
+_MOVE_STARTUP_TIMEOUT = 2.0
+_MOVE_SETTLE_SECONDS = 1.0
 
 
 class FocuserDevice:
@@ -161,13 +163,17 @@ class FocuserDevice:
         if self.birger is None or self._target_position is None:
             return False
         now = time.monotonic()
-        # We just issued an `eh` and the lens has not had time to report yet
-        if (now - self._last_move_time) < _MOVE_SETTLE_SECONDS:
-            return True
-        # Use last_focus_change (only ticks on real position movement), not
-        # last_focus_update — with periodic gs polling, update ticks every
-        # poll cycle even when stationary.
-        return (now - self.birger.last_focus_change) < _MOVE_SETTLE_SECONDS
+        last_change = self.birger.last_focus_change
+
+        # Move issued but no position change observed yet — give the poller
+        # a few cycles to either capture motion or confirm the lens is
+        # already at the commanded position.
+        if last_change < self._last_move_time:
+            return (now - self._last_move_time) < _MOVE_STARTUP_TIMEOUT
+
+        # Motion has been observed since the last move; report moving until
+        # the position has been quiet for the settle window.
+        return (now - last_change) < _MOVE_SETTLE_SECONDS
 
     @property
     def max_increment(self) -> int:
