@@ -172,7 +172,7 @@ class BirgerDevice:
     def is_open(self) -> bool:
         return self._serial is not None and self._serial.is_open
 
-    def drain(self, idle: float = 0.15, total_timeout: float = 1.0) -> None:
+    def drain(self, idle: float = 0.3, total_timeout: float = 1.5) -> None:
         """Discard queued response lines until no new line arrives for `idle` seconds.
 
         Used between init commands whose responses we don't care about (e.g.

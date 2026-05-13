@@ -80,10 +80,11 @@ class FocuserDevice:
 
             # Enable background lens querying so spontaneous status reflects
             # current focus (bit 3 of sm flags), and turn on spontaneous
-            # responses so the reader can track focus position live.
+            # responses so the reader can track focus position live. Both
+            # commands have definite known responses, so wait for them
+            # explicitly — fire-and-forget + drain races on slow lenses.
             self.birger.send("sm12", expect="DONE", timeout=2.0)
-            self.birger.send("sr1")
-            self.birger.drain()
+            self.birger.send("sr1", expect="OK", timeout=2.0)
 
             # Verify a lens is connected before attempting the focus learn
             if not self.birger.query_lens_presence():
