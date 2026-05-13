@@ -117,6 +117,9 @@ class BirgerDevice:
 
         self._serial: Optional[serial.Serial] = None
         self._reader: Optional[threading.Thread] = None
+        self._poller: Optional[threading.Thread] = None
+        self._poll_interval: float = 0.5
+        self._poll_enabled = threading.Event()
         self._stop = threading.Event()
 
         # Serialize command/response cycles
@@ -128,7 +131,12 @@ class BirgerDevice:
         self._state_lock = threading.Lock()
         self._focus_position: Optional[int] = None
         self._lens_present: bool = False
+        # `last_focus_update`: any %:xxxx parse (used by query_status sync).
+        # `last_focus_change`: only when the parsed value actually differs
+        # from the previous one — feeds the IsMoving heuristic so periodic
+        # polling at a stationary position doesn't look like motion.
         self._last_focus_update: float = 0.0
+        self._last_focus_change: float = 0.0
 
     #################
     # Connection    #
@@ -148,16 +156,39 @@ class BirgerDevice:
             timeout=0.2,
         )
         self._stop.clear()
+        self._poll_enabled.clear()
         self._reader = threading.Thread(
             target=self._reader_loop, name="BirgerReader", daemon=True
         )
         self._reader.start()
+        self._poller = threading.Thread(
+            target=self._poll_loop, name="BirgerPoller", daemon=True
+        )
+        self._poller.start()
         logger.debug(f"Opened {self._port} at {self._baud} baud")
 
+    def start_polling(self, interval: float = 0.5) -> None:
+        """Start periodic `gs` polling so focus position stays fresh.
+
+        `sr1` only broadcasts changes to ports other than the originating
+        port, so a single-serial-port driver never sees its own moves
+        spontaneously. The poll keeps `_focus_position` current via `gs`.
+        """
+
+        self._poll_interval = interval
+        self._poll_enabled.set()
+
+    def stop_polling(self) -> None:
+        self._poll_enabled.clear()
+
     def close(self) -> None:
-        """Stop the reader thread and close the serial port."""
+        """Stop the reader/poller threads and close the serial port."""
 
         self._stop.set()
+        self._poll_enabled.clear()
+        if self._poller is not None:
+            self._poller.join(timeout=2.0)
+            self._poller = None
         if self._reader is not None:
             self._reader.join(timeout=2.0)
             self._reader = None
@@ -191,6 +222,23 @@ class BirgerDevice:
     ##########
     # Reader #
     ##########
+    def _poll_loop(self) -> None:
+        """Periodically refresh focus position while polling is enabled."""
+
+        while not self._stop.is_set():
+            if not self._poll_enabled.wait(timeout=0.2):
+                continue
+            try:
+                self.query_status(timeout=1.5)
+            except Exception as e:
+                logger.debug(f"poll status failed: {e}")
+            # Sleep in small slices so close() can promptly stop us
+            t = self._poll_interval
+            while t > 0 and not self._stop.is_set() and self._poll_enabled.is_set():
+                step = min(0.1, t)
+                time.sleep(step)
+                t -= step
+
     def _reader_loop(self) -> None:
         """Read lines from the device and classify them."""
 
@@ -231,9 +279,12 @@ class BirgerDevice:
         m = _RE_FOCUS.match(line)
         if m:
             pos = int(m.group(1), 16)
+            now = time.monotonic()
             with self._state_lock:
+                if pos != self._focus_position:
+                    self._last_focus_change = now
                 self._focus_position = pos
-                self._last_focus_update = time.monotonic()
+                self._last_focus_update = now
             return
 
         if _RE_FLAGS.match(line):
@@ -332,6 +383,11 @@ class BirgerDevice:
     def last_focus_update(self) -> float:
         with self._state_lock:
             return self._last_focus_update
+
+    @property
+    def last_focus_change(self) -> float:
+        with self._state_lock:
+            return self._last_focus_change
 
     #####################
     # Focus operations  #

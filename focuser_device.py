@@ -98,6 +98,10 @@ class FocuserDevice:
             # Prime the cached focus position via a status dump
             self.birger.query_status()
 
+            # sr1 broadcasts to other ports only, so on a single-port driver
+            # we never see our own moves spontaneously — poll `gs` instead.
+            self.birger.start_polling(interval=0.5)
+
             self._connected = True
             logger.info(f"Connected to focuser {self._config.entity}")
 
@@ -160,10 +164,10 @@ class FocuserDevice:
         # We just issued an `eh` and the lens has not had time to report yet
         if (now - self._last_move_time) < _MOVE_SETTLE_SECONDS:
             return True
-        # The lens is still emitting position updates → motor is active.
-        # `sm12 + sr1` only broadcast on actual position change, so a recent
-        # update means the focus is currently changing.
-        return (now - self.birger.last_focus_update) < _MOVE_SETTLE_SECONDS
+        # Use last_focus_change (only ticks on real position movement), not
+        # last_focus_update — with periodic gs polling, update ticks every
+        # poll cycle even when stationary.
+        return (now - self.birger.last_focus_change) < _MOVE_SETTLE_SECONDS
 
     @property
     def max_increment(self) -> int:
