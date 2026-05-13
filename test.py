@@ -22,9 +22,8 @@ print(f"  Position:           {foc.Position}")
 print(f"  TempCompAvailable:  {foc.TempCompAvailable}")
 print(f"  TempComp:           {foc.TempComp}")
 
-# Cycle through a few positions
-start = foc.Position
-for target in [0x1000, 0x2000, 0x3000, 0x3FFF, 0, start]:
+# Cycle through a few positions, parking at infinity (MaxStep) at the end
+for target in [0x1000, 0x2000, 0x3000, 0, foc.MaxStep]:
     print(f"\nMoving to position {target} (0x{target:04x})...")
     foc.Move(target)
     t0 = time.time()
