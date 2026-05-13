@@ -172,6 +172,22 @@ class BirgerDevice:
     def is_open(self) -> bool:
         return self._serial is not None and self._serial.is_open
 
+    def drain(self, idle: float = 0.15, total_timeout: float = 1.0) -> None:
+        """Discard queued response lines until no new line arrives for `idle` seconds.
+
+        Used between init commands whose responses we don't care about (e.g.
+        `routeesc,0` which yields ERR1 when run against the library instead of
+        the bootloader). Bounded by `total_timeout` so we never block forever.
+        """
+
+        deadline = time.monotonic() + total_timeout
+        while time.monotonic() < deadline:
+            try:
+                line = self._rx_queue.get(timeout=idle)
+            except queue.Empty:
+                return
+            logger.debug(f"drained: {line!r}")
+
     ##########
     # Reader #
     ##########

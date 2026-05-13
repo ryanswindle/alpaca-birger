@@ -63,11 +63,16 @@ class FocuserDevice:
 
             # Bring the device into terse + new-protocol mode and confirm by
             # reading the short version string (manual section 4.1 of BEI app
-            # manual outlines this same sequence).
+            # manual outlines this same sequence). `routeesc,0` is a bootloader
+            # command — when sent to a running library it emits ERR1; we drain
+            # that and any pre-existing buffered output. After `rm0,1` the
+            # device stops echoing and stops emitting OK/legacy acks, so `vs`
+            # gets a clean `s:C2v…` response.
+            self.birger.drain()
             self.birger.send("routeesc,0")
-            time.sleep(0.05)
+            self.birger.drain()
             self.birger.send("rm0,1")
-            time.sleep(0.05)
+            self.birger.drain()
             vs = self.birger.send("vs", startswith="s:", timeout=2.0)
             logger.debug(f"Birger version: {vs}")
             if "C2" not in vs:
@@ -78,7 +83,7 @@ class FocuserDevice:
             # responses so the reader can track focus position live.
             self.birger.send("sm12", expect="DONE", timeout=2.0)
             self.birger.send("sr1")
-            time.sleep(0.05)
+            self.birger.drain()
 
             # Verify a lens is connected before attempting the focus learn
             if not self.birger.query_lens_presence():
