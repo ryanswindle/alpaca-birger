@@ -85,3 +85,18 @@ If your serial device path differs, adjust both the `--device` mapping and the `
 - Focus moves use the **servo focus with checksum** command `eh<pos4hex>,<chk>` (manual section 5.6). The command is non-blocking; the lens reports progress via spontaneous `%:xxxx` status strings.
 - `IsMoving` is inferred by comparing the live position against the last commanded target, with a settling window to absorb the fact that the 14-bit mapped range is finer than the lens' raw encoder resolution.
 - `Halt` re-issues `eh` at the currently reported position because the Birger has no explicit halt command.
+
+---
+
+## ASCOM Conformance
+
+<!-- conformu:start -->
+Last tested with **ConformU 4.3.0 (Build 49708.0503dc7)** on 2026-05-16
+(`python test_conformu.py`):
+
+| Device | Errors | Issues | Info | Status |
+|--------|:------:|:------:|:----:|:------:|
+| BIRGER_1 (Focuser #0) | 1 | 0 | 78 | ✓ PASS |
+
+_Errors may be non-zero when no hardware is attached (NotConnectedException is the expected response). **Issues == 0** indicates Alpaca protocol conformance._
+<!-- conformu:end -->
