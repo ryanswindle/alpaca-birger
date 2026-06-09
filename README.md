@@ -41,14 +41,16 @@ devices:
     baud: 115200
     timeout: 2.0
     auto_learn: true
+    initial_focus: 16383   # 0..16383 position to drive to on connect (16383 = infinity)
 ```
 
-| Field        | Description |
-|--------------|-------------|
-| `port`       | Serial device path (e.g. `/dev/ttyUSB0`, `/dev/ttyS0`) |
-| `baud`       | Default 115200 — change only if you've reprogrammed the controller |
-| `timeout`    | Per-command response timeout in seconds |
-| `auto_learn` | If true, runs `la` (learn focus range) on every successful connect |
+| Field           | Description |
+|-----------------|-------------|
+| `port`          | Serial device path (e.g. `/dev/ttyUSB0`, `/dev/ttyS0`) |
+| `baud`          | Default 115200 — change only if you've reprogrammed the controller |
+| `timeout`       | Per-command response timeout in seconds |
+| `auto_learn`    | If true, runs `la` (learn focus range) on every successful connect |
+| `initial_focus` | 14-bit mapped position (0..16383) to drive to on connect. Defaults to `16383` (infinity, == `MaxStep`). Set to `null` to leave the lens wherever it lands after `la`. |
 
 ---
 
@@ -81,7 +83,7 @@ If your serial device path differs, adjust both the `--device` mapping and the `
 
 ## Notes on the Birger protocol
 
-- Initialization sequence on connect: `routeesc,0` → `rm0,1` (terse + new) → `vs` (verify identity) → `sm12` (background querying) → `sr1` (spontaneous responses) → `lp` (lens presence check) → `la` (learn focus range, if `auto_learn`).
+- Initialization sequence on connect: `routeesc,0` → `rm0,1` (terse + new) → `vs` (verify identity) → `sm12` (background querying) → `sr1` (spontaneous responses) → `lp` (lens presence check) → `la` (learn focus range, if `auto_learn`) → `eh` (drive to `initial_focus`, if set).
 - Focus moves use the **servo focus with checksum** command `eh<pos4hex>,<chk>` (manual section 5.6). The command is non-blocking; the lens reports progress via spontaneous `%:xxxx` status strings.
 - `IsMoving` is inferred by comparing the live position against the last commanded target, with a settling window to absorb the fact that the 14-bit mapped range is finer than the lens' raw encoder resolution.
 - `Halt` re-issues `eh` at the currently reported position because the Birger has no explicit halt command.

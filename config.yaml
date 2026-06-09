@@ -8,5 +8,6 @@ devices:
     device_number: 0
     port: /dev/ttyUSB0
     baud: 115200
-    timeout: 2.0
     auto_learn: true
+    initial_focus: 16383
+    timeout: 2.0

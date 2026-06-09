@@ -104,6 +104,19 @@ class FocuserDevice:
             # we never see our own moves spontaneously — poll `gs` instead.
             self.birger.start_polling(interval=0.5)
 
+            # Optionally drive to a configured startup position. Done after
+            # polling starts so the IsMoving heuristic can observe the motion,
+            # and after auto_learn so the mapped 14-bit scale is already valid.
+            if self._config.initial_focus is not None:
+                logger.info(
+                    f"Driving {self._config.entity} to initial focus "
+                    f"{self._config.initial_focus} (0x{self._config.initial_focus:04x})"
+                )
+                with self._move_lock:
+                    self._target_position = self._config.initial_focus
+                    self._last_move_time = time.monotonic()
+                    self.birger.move_to(self._config.initial_focus)
+
             self._connected = True
             logger.info(f"Connected to focuser {self._config.entity}")
 

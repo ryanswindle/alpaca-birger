@@ -42,6 +42,10 @@ class DeviceConfig(BaseModel):
     baud: int = Field(default=115200)
     timeout: float = Field(default=2.0)
     auto_learn: bool = Field(default=True)
+    # 14-bit mapped focus position (0..16383) to drive to on connect. Defaults
+    # to 0x3FFF, which is infinity in this driver's mapped scale (== MaxStep).
+    # Set to null to leave the lens wherever it lands after `la`.
+    initial_focus: Optional[int] = Field(default=0x3FFF, ge=0, le=0x3FFF)
 
 
 class ServerConfig(BaseModel):
