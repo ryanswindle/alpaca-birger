@@ -124,7 +124,7 @@ If your serial device path differs, adjust both the `--device` mapping and the `
 ## Notes on the Birger protocol
 
 - Initialization sequence on connect: `routeesc,0` → `rm0,1` (terse + new) → `vs` (verify identity) → `sm12` (background querying) → `sr1` (spontaneous responses) → `lp` (lens presence check) → `fp` (read learned range; `la` first if `auto_learn`, or on ERR24) → `fa` (drive to `initial_focus`, if set).
-- Focus moves use the **absolute focus** command `fa<count>` (manual section 5.8). `fa` blocks — the controller answers `DONE` only once the lens has stopped — so `Move` runs it on a worker thread and returns immediately, per ASCOM's asynchronous `Move`/`IsMoving` contract.
+- Focus moves use the **absolute focus** command `fa<count>`. `fa` blocks — the controller answers `DONE` only once the lens has stopped — so `Move` runs it on a worker thread and returns immediately, per ASCOM's asynchronous `Move`/`IsMoving` contract.
 - `IsMoving` is true while a move worker is in flight. Between moves it falls back to `fp` polling, which catches focus changes this driver did not command.
 - `%:xxxx` status strings still arrive (via `sm12` + `sr1`) but are discarded: they are on the mapped scale and must not be mixed into raw counts. Position comes only from `fp`.
 - `Halt` re-commands the last known count because the Birger has no halt command. Since `fa` does not return until the lens has stopped, a halt issued mid-move cannot interrupt the move in flight — it serializes behind it.

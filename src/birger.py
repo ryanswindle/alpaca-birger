@@ -92,7 +92,7 @@ class BIRGER_ERROR_CODE:
 _RE_FOCUS = re.compile(r"^%:([0-9a-fA-F]{4})$")
 _RE_FLAGS = re.compile(r"^#:([0-9a-fA-F]{4})$")
 _RE_ERR = re.compile(r"^ERR(\d+)$")
-# `fp` reply, e.g. "fmin:-11076  fmax:11743  current:11743" (manual 5.7)
+# `fp` reply, e.g. "fmin:-11076  fmax:11743  current:11743"
 _RE_FP = re.compile(r"^fmin:(-?\d+)\s+fmax:(-?\d+)\s+current:(-?\d+)$")
 
 
@@ -416,7 +416,7 @@ class BirgerDevice:
     # Focus operations  #
     #####################
     def read_range(self) -> Tuple[int, int, int]:
-        """Read the learned raw focus range and current count (manual 5.7 `fp`).
+        """Read the learned raw focus range and current count (`fp`).
 
         Returns `(fmin, fmax, current)` in encoder counts and caches them. This
         is the only thing that updates the cached count — the spontaneous
@@ -444,7 +444,7 @@ class BirgerDevice:
         return fmin, fmax, current
 
     def move_to(self, count: int) -> None:
-        """Drive focus to a raw absolute encoder count (manual 5.8 `fa`).
+        """Drive focus to a raw absolute encoder count (`fa`).
 
         `fa` blocks: the controller answers only once the lens has stopped, so
         callers that need a prompt return must run this on a worker thread.

@@ -189,7 +189,7 @@ class FocuserDevice:
     ########################
     @property
     def absolute(self) -> bool:
-        # `fa` addresses absolute encoder counts (manual 5.8).
+        # `fa` addresses absolute encoder counts.
         return True
 
     @property
