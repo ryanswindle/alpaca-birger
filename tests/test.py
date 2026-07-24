@@ -25,10 +25,13 @@ print(f"  MaxIncrement:       {foc.MaxIncrement}")
 print(f"  Position:           {foc.Position}")
 print(f"  TempCompAvailable:  {foc.TempCompAvailable}")
 print(f"  TempComp:           {foc.TempComp}")
+print(f"  SupportedActions:   {foc.SupportedActions}")
 
-# Cycle through a few positions, parking at infinity (MaxStep) at the end
-for target in [0x1000, 0x2000, 0x3000, 0, foc.MaxStep]:
-    print(f"\nMoving to position {target} (0x{target:04x})...")
+# Quarter points of whatever range this lens learned, parking at infinity
+# (MaxStep) at the end. MaxStep is lens-specific, so nothing here is hardcoded.
+quarter = foc.MaxStep // 4
+for target in [quarter, 2 * quarter, 3 * quarter, 0, foc.MaxStep]:
+    print(f"\nMoving to position {target} of {foc.MaxStep}...")
     foc.Move(target)
     t0 = time.time()
     while foc.IsMoving:

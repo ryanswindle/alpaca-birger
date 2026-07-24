@@ -3,6 +3,7 @@ from typing import Annotated, Dict
 from fastapi import APIRouter, Depends, Form, HTTPException
 
 from exceptions import (
+    ActionNotImplementedException,
     DriverException,
     InvalidValueException,
     NotConnectedException,
@@ -38,9 +39,12 @@ def get_device(devnum: int) -> FocuserDevice:
 ##################################
 # High-level device/library info #
 ##################################
+ACTION_LEARN_FOCUS_RANGE = "LearnFocusRange"
+
+
 class DeviceMetadata:
     Name = "Birger EF-232"
-    Version = "1.0.0"
+    Version = "2.0.0"
     Description = "Birger EF-232 ASCOM Alpaca Driver via Canon EF-232 serial library"
     DeviceType = "Focuser"
     Info = "Alpaca Device\nImplements IFocuserV4\nASCOM Initiative"
@@ -67,11 +71,33 @@ def _connected_property(device: FocuserDevice, value, params):
 #######################################
 @router.put("/{devnum}/action", summary="")
 async def action(devnum: int, params: AlpacaPutParams = Depends(alpaca_put_params)):
-    get_device(devnum)
-    return MethodResponse.create(
-        client_transaction_id=params.client_transaction_id,
-        error=NotImplementedException("Action"),
-    ).model_dump()
+    device = get_device(devnum)
+    name = (params.get("Action") or "").strip()
+    if name.lower() != ACTION_LEARN_FOCUS_RANGE.lower():
+        return MethodResponse.create(
+            client_transaction_id=params.client_transaction_id,
+            error=ActionNotImplementedException(
+                f"Action '{name}' is not implemented by this driver."
+            ),
+        ).model_dump()
+    if not device.connected:
+        return MethodResponse.create(
+            client_transaction_id=params.client_transaction_id,
+            error=NotConnectedException(),
+        ).model_dump()
+    # Runs `la` inline — tens of seconds, but it is a deliberate maintenance
+    # action after a lens change, and the caller wants a real pass/fail.
+    try:
+        device.learn_range()
+        return MethodResponse.create(
+            client_transaction_id=params.client_transaction_id,
+            value=str(device.max_step),
+        ).model_dump()
+    except Exception as ex:
+        return MethodResponse.create(
+            client_transaction_id=params.client_transaction_id,
+            error=DriverException(0x500, "Focuser.Action LearnFocusRange failed", ex),
+        ).model_dump()
 
 
 @router.put("/{devnum}/commandblind", summary="")
@@ -246,7 +272,7 @@ async def name(devnum: int, params: AlpacaGetParams = Depends()):
 async def supportedactions(devnum: int, params: AlpacaGetParams = Depends()):
     get_device(devnum)
     return PropertyResponse.create(
-        value=[],
+        value=[ACTION_LEARN_FOCUS_RANGE],
         client_transaction_id=params.client_transaction_id,
     ).model_dump()
 
@@ -266,15 +292,30 @@ async def ismoving(devnum: int, params: AlpacaGetParams = Depends()):
     return _connected_property(device, device.is_moving, params)
 
 
+# MaxIncrement/MaxStep come from the range read off the lens at connect, so
+# unlike the other simple properties they cannot be evaluated while
+# disconnected — check first rather than passing them to _connected_property.
 @router.get("/{devnum}/maxincrement", summary="")
 async def maxincrement(devnum: int, params: AlpacaGetParams = Depends()):
     device = get_device(devnum)
+    if not device.connected:
+        return PropertyResponse.create(
+            value=None,
+            client_transaction_id=params.client_transaction_id,
+            error=NotConnectedException(),
+        ).model_dump()
     return _connected_property(device, device.max_increment, params)
 
 
 @router.get("/{devnum}/maxstep", summary="")
 async def maxstep(devnum: int, params: AlpacaGetParams = Depends()):
     device = get_device(devnum)
+    if not device.connected:
+        return PropertyResponse.create(
+            value=None,
+            client_transaction_id=params.client_transaction_id,
+            error=NotConnectedException(),
+        ).model_dump()
     return _connected_property(device, device.max_step, params)
 
 

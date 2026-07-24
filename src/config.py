@@ -41,11 +41,16 @@ class DeviceConfig(BaseModel):
     port: str = Field(default="/dev/ttyUSB0")
     baud: int = Field(default=115200)
     timeout: float = Field(default=2.0)
-    auto_learn: bool = Field(default=True)
-    # 14-bit mapped focus position (0..16383) to drive to on connect. Defaults
-    # to 0x3FFF, which is infinity in this driver's mapped scale (== MaxStep).
-    # Set to null to leave the lens wherever it lands after `la`.
-    initial_focus: Optional[int] = Field(default=0x3FFF, ge=0, le=0x3FFF)
+    move_timeout: float = Field(default=60.0)
+    # `la` is only needed when the lens changes or the controller reports its
+    # stored range is bad — it keeps the learned range across power cycles, and
+    # each relearn shifts the bounds a few counts, moving every stored position
+    # with them. Off by default; the driver still relearns on ERR24.
+    auto_learn: bool = Field(default=False)
+    # Position to drive to on connect, in the same 0..MaxStep scale as Move.
+    # MaxStep is not known until the range is read at connect, so the upper
+    # bound is validated there rather than here. Null leaves the lens alone.
+    initial_focus: Optional[int] = Field(default=None, ge=0)
 
 
 class ServerConfig(BaseModel):

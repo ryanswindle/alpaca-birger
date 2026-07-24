@@ -7,17 +7,23 @@ User Manual (Birger Engineering). Provides:
     them as status strings (`%:`, `&:`, `@:`, `#:`), lens connection messages,
     or command responses, and updates internal state accordingly.
   - A `send` helper that serializes commands and waits for a matching response.
-  - Focus-specific helpers (`learn_range`, `move_to`, `halt`, `focus_position`).
+  - Focus-specific helpers (`learn_range`, `read_range`, `move_to`, `halt`).
 
 Operates the device in terse + new protocol mode (`rm0,1`) with background
 querying and spontaneous responses enabled (`sm12` + `sr1`).
+
+Focus is addressed in the lens' native encoder counts via `fa`/`fp`, not via
+the 14-bit mapped `eh`/`%:` scale. The mapped scale is capped at 0x3FFF, which
+is coarser than — and on lenses with long travel unable to reach the ends of —
+the raw range that `la` learns. `fp` reports that raw range, and both ends may
+be negative, so nothing here assumes a zero-based scale.
 """
 
 import queue
 import re
 import threading
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 import serial
 
@@ -86,34 +92,37 @@ class BIRGER_ERROR_CODE:
 _RE_FOCUS = re.compile(r"^%:([0-9a-fA-F]{4})$")
 _RE_FLAGS = re.compile(r"^#:([0-9a-fA-F]{4})$")
 _RE_ERR = re.compile(r"^ERR(\d+)$")
-
-
-# Absolute mapped focus range is 14-bit: 0..0x3FFF (Birger manual section 3.4)
-FOCUS_MIN = 0
-FOCUS_MAX = 0x3FFF
-
-
-def focus_checksum(position: int) -> int:
-    """XOR of the four 4-bit nibbles of a 14-bit focus position (manual 5.6)."""
-    checksum = 0
-    mask = 0x1000
-    for _ in range(4):
-        checksum ^= (position // mask) & 0xF
-        mask >>= 4
-    return checksum & 0x0F
+# `fp` reply, e.g. "fmin:-11076  fmax:11743  current:11743" (manual 5.7)
+_RE_FP = re.compile(r"^fmin:(-?\d+)\s+fmax:(-?\d+)\s+current:(-?\d+)$")
 
 
 class BirgerError(RuntimeError):
-    """Raised for errors returned by the Birger lens controller."""
+    """Raised for errors returned by the Birger lens controller.
+
+    `code` carries the numeric ERRx code when the device rejected a command,
+    so callers can react to specific failures (notably ERR24, which asks for
+    a relearn) instead of parsing the message text.
+    """
+
+    def __init__(self, message: str, code: Optional[int] = None):
+        super().__init__(message)
+        self.code = code
 
 
 class BirgerDevice:
     """Low-level driver for the Birger EF-232 lens controller."""
 
-    def __init__(self, port: str, baud: int = 115200, timeout: float = 2.0):
+    def __init__(
+        self,
+        port: str,
+        baud: int = 115200,
+        timeout: float = 2.0,
+        move_timeout: float = 60.0,
+    ):
         self._port = port
         self._baud = baud
         self._timeout = timeout
+        self._move_timeout = move_timeout
 
         self._serial: Optional[serial.Serial] = None
         self._reader: Optional[threading.Thread] = None
@@ -121,18 +130,24 @@ class BirgerDevice:
         self._poll_interval: float = 0.5
         self._poll_enabled = threading.Event()
         self._stop = threading.Event()
+        # Set while an `fa` is in flight. `fa` blocks until the lens stops, so
+        # it holds the tx lock for the whole move; polling during that window
+        # would just queue up behind it and land stale.
+        self._move_active = threading.Event()
 
         # Serialize command/response cycles
         self._tx_lock = threading.Lock()
         # Lines that aren't status/lens-msg get queued here for `send` to consume
         self._rx_queue: "queue.Queue[str]" = queue.Queue()
 
-        # State maintained by the reader thread
+        # State maintained by `read_range`
         self._state_lock = threading.Lock()
-        self._focus_position: Optional[int] = None
+        self._focus_count: Optional[int] = None
+        self._focus_min: Optional[int] = None
+        self._focus_max: Optional[int] = None
         self._lens_present: bool = False
-        # `last_focus_update`: any %:xxxx parse (used by query_status sync).
-        # `last_focus_change`: only when the parsed value actually differs
+        # `last_focus_update`: any successful `fp` parse (used by read_range sync).
+        # `last_focus_change`: only when the parsed count actually differs
         # from the previous one — feeds the IsMoving heuristic so periodic
         # polling at a stationary position doesn't look like motion.
         self._last_focus_update: float = 0.0
@@ -168,11 +183,11 @@ class BirgerDevice:
         logger.debug(f"Opened {self._port} at {self._baud} baud")
 
     def start_polling(self, interval: float = 0.5) -> None:
-        """Start periodic `gs` polling so focus position stays fresh.
+        """Start periodic `fp` polling so the focus count stays fresh.
 
         `sr1` only broadcasts changes to ports other than the originating
         port, so a single-serial-port driver never sees its own moves
-        spontaneously. The poll keeps `_focus_position` current via `gs`.
+        spontaneously. The poll keeps `_focus_count` current via `fp`.
         """
 
         self._poll_interval = interval
@@ -223,15 +238,16 @@ class BirgerDevice:
     # Reader #
     ##########
     def _poll_loop(self) -> None:
-        """Periodically refresh focus position while polling is enabled."""
+        """Periodically refresh the focus count while polling is enabled."""
 
         while not self._stop.is_set():
             if not self._poll_enabled.wait(timeout=0.2):
                 continue
-            try:
-                self.query_status(timeout=1.5)
-            except Exception as e:
-                logger.debug(f"poll status failed: {e}")
+            if not self._move_active.is_set():
+                try:
+                    self.read_range()
+                except Exception as e:
+                    logger.debug(f"poll fp failed: {e}")
             # Sleep in small slices so close() can promptly stop us
             t = self._poll_interval
             while t > 0 and not self._stop.is_set() and self._poll_enabled.is_set():
@@ -276,15 +292,11 @@ class BirgerDevice:
             return
         logger.debug(f"RX: {line!r}")
 
-        m = _RE_FOCUS.match(line)
-        if m:
-            pos = int(m.group(1), 16)
-            now = time.monotonic()
-            with self._state_lock:
-                if pos != self._focus_position:
-                    self._last_focus_change = now
-                self._focus_position = pos
-                self._last_focus_update = now
+        if _RE_FOCUS.match(line):
+            # `%:xxxx` is the 14-bit mapped position, a different scale from
+            # the raw counts this driver works in. `sm12` + `sr1` keep these
+            # arriving spontaneously; swallow them so they never reach a
+            # `send` waiting on a command response.
             return
 
         if _RE_FLAGS.match(line):
@@ -322,7 +334,7 @@ class BirgerDevice:
 
         - `expect`: exact match required (e.g., "DONE:LA").
         - `startswith`: any line starting with this prefix is accepted (e.g., "s:").
-        - If both are None, fire-and-forget (e.g., for `eh`).
+        - If both are None, fire-and-forget.
         Raises BirgerError on `ERRx` responses or timeout.
         """
 
@@ -358,7 +370,8 @@ class BirgerDevice:
                 if m:
                     code = int(m.group(1))
                     raise BirgerError(
-                        f"{command!r} returned ERR{code}: {BIRGER_ERROR_CODE.name(code)}"
+                        f"{command!r} returned ERR{code}: {BIRGER_ERROR_CODE.name(code)}",
+                        code=code,
                     )
                 if expect is not None and line == expect:
                     return line
@@ -370,9 +383,19 @@ class BirgerDevice:
     # State helpers  #
     ##################
     @property
-    def focus_position(self) -> Optional[int]:
+    def focus_count(self) -> Optional[int]:
         with self._state_lock:
-            return self._focus_position
+            return self._focus_count
+
+    @property
+    def focus_min(self) -> Optional[int]:
+        with self._state_lock:
+            return self._focus_min
+
+    @property
+    def focus_max(self) -> Optional[int]:
+        with self._state_lock:
+            return self._focus_max
 
     @property
     def lens_present(self) -> bool:
@@ -392,25 +415,81 @@ class BirgerDevice:
     #####################
     # Focus operations  #
     #####################
-    def move_to(self, position: int) -> None:
-        """Servo the focus to a 14-bit mapped position (manual 5.6 `eh`)."""
+    def read_range(self) -> Tuple[int, int, int]:
+        """Read the learned raw focus range and current count (manual 5.7 `fp`).
 
-        position = max(FOCUS_MIN, min(FOCUS_MAX, int(position)))
-        chk = focus_checksum(position)
-        self.send(f"eh{position:04x},{chk:x}")
+        Returns `(fmin, fmax, current)` in encoder counts and caches them. This
+        is the only thing that updates the cached count — the spontaneous
+        `%:xxxx` strings are on the mapped scale and must not be mixed in.
+        """
+
+        line = self.send("fp", startswith="fmin:", timeout=self._timeout)
+        m = _RE_FP.match(line)
+        if m is None:
+            raise BirgerError(f"Unparseable fp response: {line!r}")
+        fmin, fmax, current = (int(g) for g in m.groups())
+        if fmax <= fmin:
+            raise BirgerError(
+                f"Nonsensical focus range from fp: fmin={fmin} fmax={fmax}",
+                code=BIRGER_ERROR_CODE.INVALID_FOCUS_RANGE,
+            )
+        now = time.monotonic()
+        with self._state_lock:
+            if current != self._focus_count:
+                self._last_focus_change = now
+            self._focus_count = current
+            self._focus_min = fmin
+            self._focus_max = fmax
+            self._last_focus_update = now
+        return fmin, fmax, current
+
+    def move_to(self, count: int) -> None:
+        """Drive focus to a raw absolute encoder count (manual 5.8 `fa`).
+
+        `fa` blocks: the controller answers only once the lens has stopped, so
+        callers that need a prompt return must run this on a worker thread.
+        Out-of-range targets raise rather than being clamped — a silently
+        truncated move parks the lens somewhere the caller never asked for.
+        """
+
+        count = int(count)
+        with self._state_lock:
+            fmin, fmax = self._focus_min, self._focus_max
+        if fmin is None or fmax is None:
+            raise BirgerError("Focus range unknown; call read_range() first")
+        if count < fmin or count > fmax:
+            raise BirgerError(f"Focus count {count} out of range ({fmin}–{fmax})")
+
+        self._move_active.set()
+        try:
+            self.send(f"fa{count}", startswith="DONE", timeout=self._move_timeout)
+        finally:
+            self._move_active.clear()
 
     def halt(self) -> None:
-        """Stop motion by re-commanding the current position (manual lacks halt)."""
+        """Stop motion by re-commanding the last known count (manual lacks halt).
 
-        pos = self.focus_position
-        if pos is None:
+        The EF-232 has no halt command, and `fa` does not return until the lens
+        has stopped, so a halt issued mid-move cannot interrupt the move in
+        flight — it serializes behind it and then holds the lens at wherever
+        this call found it.
+        """
+
+        count = self.focus_count
+        if count is None:
             return  # Nothing to halt against
-        self.move_to(pos)
+        self.move_to(count)
 
     def learn_range(self, timeout: float = 60.0) -> None:
-        """Learn the focus range so the mapped 0..16383 scale is valid (manual 5.18)."""
+        """Learn the focus range and refresh the cached bounds (manual 5.18 `la`).
+
+        Racks the lens end to end and parks it at `fmax`, and shifts the
+        measured bounds by a few counts each time it runs — so every stored
+        position is relative to the most recent learn.
+        """
 
         self.send("la", expect="DONE:LA", timeout=timeout)
+        self.read_range()
 
     def query_lens_presence(self) -> bool:
         """Force-refresh `lens_present` from the device (manual 5.21 `lp`)."""
@@ -420,23 +499,3 @@ class BirgerDevice:
         with self._state_lock:
             self._lens_present = present
         return present
-
-    def query_status(self, timeout: float = 2.0) -> None:
-        """Request a full status dump (manual 5.12 `gs`).
-
-        The reply consists entirely of status-prefixed lines (`%:`, `&:`,
-        `@:`, `#:`) that the reader thread intercepts before they hit the
-        response queue, so we wait for an observable state change instead
-        of a queued response.
-        """
-
-        with self._state_lock:
-            before = self._last_focus_update
-        self.send("gs")
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            with self._state_lock:
-                if self._last_focus_update > before:
-                    return
-            time.sleep(0.02)
-        raise BirgerError("Timeout waiting for status update after 'gs'")
