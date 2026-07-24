@@ -34,10 +34,16 @@ The mapped scale cannot address the whole lens on long-travel glass. A Canon
 16,384 mapped steps, so the mapped scale is both unable to reach some positions
 and about 1.4× coarser than the encoder everywhere else.
 
-Raw counts can be negative, so ASCOM `Position` is reported as `count - fmin`,
-putting the client-visible scale at `0..MaxStep` where `MaxStep = fmax - fmin`.
-Both bounds are read from `fp` at connect, so `MaxStep` follows whatever lens is
-attached rather than being a compiled-in constant.
+The two raw-focus commands do **not** share a basis, which is easy to get wrong:
+
+- `fa<n>` counts up from the near end of the learned range: `0` is `fmin` and
+  `fmax - fmin` is the far end.
+- `fp` reports `current` as a signed raw count, i.e. `fmin..fmax` directly.
+
+ASCOM wants `0..MaxStep`, which is exactly the `fa` basis, so commanded
+positions pass through untouched and only `fp` readings get `- fmin` applied.
+`MaxStep = fmax - fmin`, read from `fp` at connect, so it follows whatever lens
+is attached rather than being a compiled-in constant.
 
 **Positions are only meaningful relative to the learn that produced them.** Each
 `la` re-measures the bounds and lands a few counts off the last run, which shifts
@@ -124,7 +130,7 @@ If your serial device path differs, adjust both the `--device` mapping and the `
 ## Notes on the Birger protocol
 
 - Initialization sequence on connect: `routeesc,0` → `rm0,1` (terse + new) → `vs` (verify identity) → `sm12` (background querying) → `sr1` (spontaneous responses) → `lp` (lens presence check) → `fp` (read learned range; `la` first if `auto_learn`, or on ERR24) → `fa` (drive to `initial_focus`, if set).
-- Focus moves use the **absolute focus** command `fa<count>`. `fa` blocks — the controller answers `DONE` only once the lens has stopped — so `Move` runs it on a worker thread and returns immediately, per ASCOM's asynchronous `Move`/`IsMoving` contract.
+- Focus moves use the **absolute focus** command `fa<position>`. `fa` blocks — the controller answers `DONE` only once the lens has stopped — so `Move` runs it on a worker thread and returns immediately, per ASCOM's asynchronous `Move`/`IsMoving` contract.
 - `IsMoving` is true while a move worker is in flight. Between moves it falls back to `fp` polling, which catches focus changes this driver did not command.
 - `%:xxxx` status strings still arrive (via `sm12` + `sr1`) but are discarded: they are on the mapped scale and must not be mixed into raw counts. Position comes only from `fp`.
 - `Halt` re-commands the last known count because the Birger has no halt command. Since `fa` does not return until the lens has stopped, a halt issued mid-move cannot interrupt the move in flight — it serializes behind it.

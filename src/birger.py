@@ -384,8 +384,17 @@ class BirgerDevice:
     ##################
     @property
     def focus_count(self) -> Optional[int]:
+        """Last count from `fp`, on that command's signed raw basis."""
         with self._state_lock:
             return self._focus_count
+
+    @property
+    def focus_position(self) -> Optional[int]:
+        """Last position on the 0-based basis `fa` accepts (0 == `fmin`)."""
+        with self._state_lock:
+            if self._focus_count is None or self._focus_min is None:
+                return None
+            return self._focus_count - self._focus_min
 
     @property
     def focus_min(self) -> Optional[int]:
@@ -443,8 +452,13 @@ class BirgerDevice:
             self._last_focus_update = now
         return fmin, fmax, current
 
-    def move_to(self, count: int) -> None:
-        """Drive focus to a raw absolute encoder count (`fa`).
+    def move_to(self, position: int) -> None:
+        """Drive focus to an absolute position (`fa`).
+
+        The two focus commands do not share a basis. `fa` counts up from the
+        near end of the learned range — 0 is `fmin`, `fmax - fmin` is the far
+        end — while `fp` reports `current` as a signed raw count. Take
+        `position` on the `fa` basis; `focus_position` converts the other way.
 
         `fa` blocks: the controller answers only once the lens has stopped, so
         callers that need a prompt return must run this on a worker thread.
@@ -452,17 +466,18 @@ class BirgerDevice:
         truncated move parks the lens somewhere the caller never asked for.
         """
 
-        count = int(count)
+        position = int(position)
         with self._state_lock:
             fmin, fmax = self._focus_min, self._focus_max
         if fmin is None or fmax is None:
             raise BirgerError("Focus range unknown; call read_range() first")
-        if count < fmin or count > fmax:
-            raise BirgerError(f"Focus count {count} out of range ({fmin}–{fmax})")
+        span = fmax - fmin
+        if position < 0 or position > span:
+            raise BirgerError(f"Focus position {position} out of range (0–{span})")
 
         self._move_active.set()
         try:
-            self.send(f"fa{count}", startswith="DONE", timeout=self._move_timeout)
+            self.send(f"fa{position}", startswith="DONE", timeout=self._move_timeout)
         finally:
             self._move_active.clear()
 
@@ -475,10 +490,10 @@ class BirgerDevice:
         this call found it.
         """
 
-        count = self.focus_count
-        if count is None:
+        position = self.focus_position
+        if position is None:
             return  # Nothing to halt against
-        self.move_to(count)
+        self.move_to(position)
 
     def learn_range(self, timeout: float = 60.0) -> None:
         """Learn the focus range and refresh the cached bounds (manual 5.18 `la`).

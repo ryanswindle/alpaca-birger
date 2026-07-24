@@ -219,21 +219,21 @@ class FocuserDevice:
     def position(self) -> int:
         if self.birger is None or self._focus_min is None:
             raise RuntimeError("Not connected to focuser")
-        count = self.birger.focus_count
-        if count is None:
-            # Force a refresh if we have not seen a count yet
+        position = self.birger.focus_position
+        if position is None:
+            # Force a refresh if we have not seen a position yet
             try:
                 self.birger.read_range()
             except BirgerError as e:
                 logger.warning(f"Focus position read failed: {e}")
-            count = self.birger.focus_count
-        if count is None:
+            position = self.birger.focus_position
+        if position is None:
             return 0
         # Each `la` shifts the measured bounds by a few counts, so a lens
         # parked at an end can read just outside the range learned earlier.
         # ASCOM requires 0..MaxStep, so clamp what we report — commanded
         # targets are validated and rejected rather than clamped.
-        return max(0, min(self.max_step, count - self._focus_min))
+        return max(0, min(self.max_step, position))
 
     @property
     def step_size(self) -> float:
@@ -256,17 +256,19 @@ class FocuserDevice:
     def halt(self) -> None:
         if self.birger is None:
             raise RuntimeError("Not connected to focuser")
-        count = self.birger.focus_count
-        if count is None:
+        position = self.birger.focus_position
+        if position is None:
             return  # Nothing to halt against
-        self._start_move(count)
+        self._start_move(position)
 
     def move(self, position: int) -> None:
         if self.birger is None or self._focus_min is None:
             raise RuntimeError("Not connected to focuser")
         if position < 0 or position > self.max_step:
             raise ValueError(f"Position {position} out of range (0–{self.max_step})")
-        self._start_move(position + self._focus_min)
+        # `fa` counts from `fmin` over `fmax - fmin`, which is the same scale
+        # ASCOM asks for, so the position passes straight through.
+        self._start_move(position)
         logger.debug(f"Moving to position {position}")
 
     def learn_range(self) -> None:
@@ -294,19 +296,19 @@ class FocuserDevice:
             with self._move_lock:
                 self._active_moves -= 1
 
-    def _start_move(self, target_count: int) -> None:
+    def _start_move(self, target: int) -> None:
         """Run `fa` on a worker so Move returns promptly, per ASCOM semantics."""
 
         with self._move_lock:
             self._active_moves += 1
         threading.Thread(
             target=self._run_move,
-            args=(target_count,),
+            args=(target,),
             name="BirgerMove",
             daemon=True,
         ).start()
 
-    def _run_move(self, target_count: int) -> None:
+    def _run_move(self, target: int) -> None:
         """Body of a move worker.
 
         Motion is asynchronous under ASCOM, so a failure here has no request to
@@ -315,7 +317,7 @@ class FocuserDevice:
         """
 
         try:
-            self.birger.move_to(target_count)
+            self.birger.move_to(target)
         except BirgerError as e:
             if e.code == BIRGER_ERROR_CODE.INVALID_FOCUS_RANGE:
                 logger.warning(f"Move rejected ({e}); relearning focus range")
@@ -323,14 +325,14 @@ class FocuserDevice:
                     self.birger.learn_range(timeout=_LEARN_TIMEOUT)
                     self._focus_min = self.birger.focus_min
                     self._focus_max = self.birger.focus_max
-                    self.birger.move_to(target_count)
+                    self.birger.move_to(target)
                 except BirgerError as retry_error:
                     logger.error(
-                        f"Move to raw count {target_count} failed after "
+                        f"Move to position {target} failed after "
                         f"relearn: {retry_error}"
                     )
             else:
-                logger.error(f"Move to raw count {target_count} failed: {e}")
+                logger.error(f"Move to position {target} failed: {e}")
         finally:
             # Nothing may escape before the decrement — a leaked count would
             # pin IsMoving true for the life of the process.
